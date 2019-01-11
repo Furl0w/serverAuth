@@ -10,6 +10,7 @@ import (
 	"os"
 
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 )
 
 var dbServicePort, dbServiceName string
@@ -21,6 +22,11 @@ type user struct {
 
 type authResponse struct {
 	IsAuthValid bool `json:"isAuthValid"`
+}
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
 }
 
 func main() {
@@ -37,11 +43,13 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/", hello).Methods("GET")
-	r.HandleFunc("e/testAuth/{nam}", test).Methods("GET")
+	r.HandleFunc("testAuth/{name}", test).Methods("GET")
+	r.HandleFunc("/echo", echo)
 
 	http.ListenAndServe(":"+PORT, r)
 }
 
+//for dev/test only
 func hello(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Fprint(w, "Hello world !\n")
@@ -134,4 +142,34 @@ func checkAuthPy() (bool, error) {
 		return authResponse.IsAuthValid, nil
 	}
 	return false, errors.New("Could not reach the service")
+}
+
+//for dev test only, taken from https://gowebexamples.com/websockets/
+func echo(w http.ResponseWriter, r *http.Request) {
+
+	//DO NOT DO THAT IN PRODUCTION
+	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+	for {
+		msgType, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		fmt.Printf("%s sent: %s\n", conn.RemoteAddr(), string(msg))
+		if err = conn.WriteMessage(msgType, msg); err != nil {
+			return
+		}
+	}
+}
+
+//TO DO -> add conn to slice of socket struct with id of connected client
+//Get the id from the route -> link the socket with the id
+
+func connect(w http.ResponseWriter, r *http.Request) {
+
 }
