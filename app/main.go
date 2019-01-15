@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,8 +19,23 @@ import (
 var dbServicePort, dbServiceName string
 
 type user struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+type userExistsRequest struct {
+	Email  string `json:"email,omitempty"`
+	Exists bool   `json:"exists"`
+}
+
+type notificationRequest struct {
+	Data notificationData `json:"data"`
+	To   string           `json:"to,omitempty"`
+}
+
+type notificationData struct {
+	Title string `json:"title,omitempty"`
+	Body  string `json:"body,omitempty"`
 }
 
 type authResponse struct {
@@ -54,12 +70,30 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/connect/{email}", connect)
+	r.HandleFunc("/userExists/{email}", checkUser)
 	r.HandleFunc("/authAnswer", authAnswer).Methods("POST")
-
 	http.ListenAndServe(":"+PORT, r)
 }
 
-func userExist(email string) (bool, error) {
+func checkUser(w http.ResponseWriter, r *http.Request) {
+
+	params := mux.Vars(r)
+	exists, err := userExists(params["email"])
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+	res := userExistsRequest{Email: params["email"], Exists: exists}
+	json, err := json.Marshal(res)
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+	fmt.Fprintf(w, "%s", string(json))
+	return
+}
+
+func userExists(email string) (bool, error) {
 
 	request := fmt.Sprintf("http://%s:%s/user/email/%s", dbServiceName, dbServicePort, email)
 	response, err := http.Get(request)
@@ -88,9 +122,8 @@ func userExist(email string) (bool, error) {
 	return false, errors.New("Could not reach the service")
 }
 
-//c.Data <- packet{IsAuthValid: false}
-
 func connect(w http.ResponseWriter, r *http.Request) {
+
 	params := mux.Vars(r)
 
 	//DO NOT DO THAT IN PRODUCTION
@@ -125,8 +158,38 @@ func authAnswer(w http.ResponseWriter, r *http.Request) {
 		log.Println(err.Error())
 		return
 	}
+	fmt.Printf("%s %t\n", authResponse.Client, authResponse.IsAuthValid)
 	if channel, ok := manager.Channels[authResponse.Client]; ok {
 		channel.Data <- socket.Packet{IsAuthValid: authResponse.IsAuthValid}
 	}
+	return
+}
+
+func sendNotification(token string) {
+	request := "https://fcm.googleapis.com/fcm/send"
+	data := notificationRequest{Data: notificationData{Title: "FunConnect", Body: "Connect to your app"}, To: token}
+	body, err := json.Marshal(data)
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+	req, err := http.NewRequest("POST", request, bytes.NewReader(body))
+	if err != nil {
+		log.Println(err.Error())
+		return
+	}
+
+	//Secret key
+	key := ""
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("key=%s", key))
+
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println(err.Error())
+	}
+	defer resp.Body.Close()
 	return
 }
