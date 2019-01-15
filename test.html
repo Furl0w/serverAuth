@@ -4,12 +4,13 @@
 <button onclick="send()">Send</button>
 <pre id="output"></pre>
 <script>
+	let r = Math.random().toString(36).substring(7);
 	var input = document.getElementById("input");
 	var output = document.getElementById("output");
-	var socket = new WebSocket("ws://localhost:3030/echo");
+	var socket = new WebSocket("ws://localhost:3030/connect/"+r);
 
 	socket.onopen = function () {
-        socket.send("test")
+        socket.send('{"isAuthValid":true}')
 		output.innerHTML += "Status: Connected\n";
 	};
 
