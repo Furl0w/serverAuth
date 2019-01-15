@@ -23,7 +23,8 @@ type user struct {
 }
 
 type authResponse struct {
-	IsAuthValid bool `json:"isAuthValid"`
+	Client      string `json:"client,omitempty"`
+	IsAuthValid bool   `json:"isAuthValid"`
 }
 
 var upgrader = websocket.Upgrader{
@@ -32,7 +33,7 @@ var upgrader = websocket.Upgrader{
 }
 
 var manager = socket.ChannelManager{
-	Channels:   make(map[string]bool),
+	Channels:   make(map[string]*socket.Channel),
 	Register:   make(chan *socket.Channel),
 	Unregister: make(chan *socket.Channel),
 }
@@ -53,6 +54,7 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/connect/{email}", connect)
+	r.HandleFunc("/authAnswer", authAnswer).Methods("POST")
 
 	http.ListenAndServe(":"+PORT, r)
 }
@@ -103,5 +105,28 @@ func connect(w http.ResponseWriter, r *http.Request) {
 	manager.Register <- c
 	go manager.Receive(c)
 	go manager.Send(c)
+	return
+}
+
+func authAnswer(w http.ResponseWriter, r *http.Request) {
+
+	var authResponse authResponse
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "error when receiving stuff\n")
+		log.Println(err.Error())
+		return
+	}
+	err = json.Unmarshal(body, &authResponse)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "error when unmarshalling json\n")
+		log.Println(err.Error())
+		return
+	}
+	if channel, ok := manager.Channels[authResponse.Client]; ok {
+		channel.Data <- socket.Packet{IsAuthValid: authResponse.IsAuthValid}
+	}
 	return
 }

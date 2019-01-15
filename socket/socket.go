@@ -31,7 +31,7 @@ func NewChannel(conn *websocket.Conn, client string) *Channel {
 
 //ChannelManager is used to managed all the channels
 type ChannelManager struct {
-	Channels   map[string]bool
+	Channels   map[string]*Channel
 	Register   chan *Channel
 	Unregister chan *Channel
 }
@@ -41,7 +41,7 @@ func (manager *ChannelManager) Start() {
 	for {
 		select {
 		case c := <-manager.Register:
-			manager.Channels[c.Client] = true
+			manager.Channels[c.Client] = c
 			log.Println("connection added")
 			log.Println(c.Client)
 		case c := <-manager.Unregister:
