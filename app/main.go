@@ -43,6 +43,22 @@ type authResponse struct {
 	IsAuthValid bool   `json:"isAuthValid"`
 }
 
+type userRegistrationRequest struct {
+	Email      string      `json:"email,omitempty"`
+	Signatures []signature `json:"signatures,omitempty"`
+	Token      string      `json:"token,omitempty"`
+}
+
+type signature struct {
+	Abs  []int `json:"abs"`
+	Ord  []int `json:"ord"`
+	Time []int `json:"time"`
+}
+
+type userRegistrationAnswer struct {
+	IsRegistrationValid bool `json:"isRegistrationValid"`
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
@@ -72,6 +88,7 @@ func main() {
 	r.HandleFunc("/connect/{email}", connect)
 	r.HandleFunc("/userExists/{email}", checkUser)
 	r.HandleFunc("/authAnswer", authAnswer).Methods("POST")
+	r.HandleFunc("/register", register).Methods("POST")
 	http.ListenAndServe(":"+PORT, r)
 }
 
@@ -192,4 +209,64 @@ func sendNotification(token string) {
 	}
 	defer resp.Body.Close()
 	return
+}
+
+func register(w http.ResponseWriter, r *http.Request) {
+	var userRequest userRegistrationRequest
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "error when receiving stuff\n")
+		log.Println(err.Error())
+		return
+	}
+	err = json.Unmarshal(body, &userRequest)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "error when unmarshalling json\n")
+		log.Println(err.Error())
+		return
+	}
+	registration := registerUser(userRequest)
+	if registration != true {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "error during registration\n")
+		return
+	}
+	answer, err := json.Marshal(userRegistrationAnswer{IsRegistrationValid: registration})
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "error during answer\n")
+		return
+	}
+	w.WriteHeader(200)
+	r.Header.Set("Content-Type", "application/json")
+	fmt.Fprintf(w, "%s", string(answer))
+	return
+}
+
+func registerUser(user userRegistrationRequest) bool {
+	request := fmt.Sprintf("http://%s:%s/user", dbServiceName, dbServicePort)
+	body, err := json.Marshal(user)
+	if err != nil {
+		log.Println(err.Error())
+		return false
+	}
+	req, err := http.NewRequest("POST", request, bytes.NewReader(body))
+	if err != nil {
+		log.Println(err.Error())
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println(err.Error())
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false
+	}
+	return true
 }
