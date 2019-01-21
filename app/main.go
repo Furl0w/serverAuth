@@ -19,7 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var dbServicePort, dbServiceName string
+var dbServicePort, dbServiceName, firebaseSecret, jwtSecret string
 
 const firebaseService = "https://fcm.googleapis.com/fcm/send"
 
@@ -106,6 +106,12 @@ func main() {
 	if dbServiceName = os.Getenv("DB_SERVICE_NAME"); dbServiceName == "" {
 		dbServiceName = "localhost"
 	}
+	if firebaseSecret = os.Getenv("FIREBASE_KEY"); firebaseSecret == "" {
+		firebaseSecret = "fffffffffffffffffffffffff"
+	}
+	if jwtSecret = os.Getenv("JWT_SECRET"); jwtSecret == "" {
+		jwtSecret = "fffffffffffffffffffffffffffffff"
+	}
 
 	go manager.Start()
 
@@ -116,7 +122,7 @@ func main() {
 	r.HandleFunc("/connectFromToken", connectFromToken).Methods("POST")
 	r.HandleFunc("/authAnswer", authAnswer).Methods("POST")
 	r.HandleFunc("/register", register).Methods("POST")
-	log.Fatal(http.ListenAndServeTLS(":"+PORT, "localhost.pem", "localhost-key.pem", r))
+	log.Fatal(http.ListenAndServe(":"+PORT, r))
 }
 
 func checkUser(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +158,7 @@ func tryConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	token := ""
 	if exists != false {
-		token, err = jwt.CreateToken(params["email"], time.Duration(5))
+		token, err = jwt.CreateToken(params["email"], time.Duration(5), []byte(jwtSecret))
 		if err != nil {
 			w.WriteHeader(500)
 			log.Println(err.Error())
@@ -236,7 +242,7 @@ func connectFromToken(w http.ResponseWriter, r *http.Request) {
 		log.Println(err.Error())
 		return
 	}
-	_, err = jwt.ValidateToken(connectFromTokenRequest.Token, connectFromTokenRequest.Email)
+	_, err = jwt.ValidateToken(connectFromTokenRequest.Token, connectFromTokenRequest.Email, []byte(jwtSecret))
 	if err != nil {
 		w.WriteHeader(400)
 		fmt.Fprintf(w, "invalid token\n")
@@ -275,7 +281,7 @@ func authAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expirationLimit := time.Duration(131400)
-	token, err := jwt.CreateToken(authAnswer.Client, expirationLimit)
+	token, err := jwt.CreateToken(authAnswer.Client, expirationLimit, []byte(jwtSecret))
 	if err != nil {
 		w.WriteHeader(400)
 		fmt.Fprintf(w, "error when creating token\n")
@@ -397,7 +403,7 @@ func validateMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		keys := r.URL.Query()
 		token := keys.Get("token")
 		if token != "" {
-			mail, err := jwt.ValidateToken(token, params["email"])
+			mail, err := jwt.ValidateToken(token, params["email"], []byte(jwtSecret))
 			if err != nil {
 				w.WriteHeader(400)
 				json.NewEncoder(w).Encode(exceptionMiddleware{Message: err.Error()})
