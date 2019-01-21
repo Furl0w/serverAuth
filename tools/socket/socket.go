@@ -9,7 +9,8 @@ import (
 
 //Packet represent the application data received and send by the socket
 type Packet struct {
-	IsAuthValid bool `json:"isAuthValid"`
+	IsAuthValid bool   `json:"isAuthValid"`
+	Token       string `json:"token,omitempty"`
 }
 
 //Channel represent a connection to a client identified by his email

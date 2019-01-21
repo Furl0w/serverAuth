@@ -9,14 +9,19 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
-	"serverAuth/socket"
+	"serverAuth/tools/socket"
+	jwt "serverAuth/tools/token"
 
+	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
 var dbServicePort, dbServiceName string
+
+const firebaseService = "https://fcm.googleapis.com/fcm/send"
 
 type user struct {
 	ID    string `json:"id,omitempty"`
@@ -26,6 +31,26 @@ type user struct {
 type userExistsRequest struct {
 	Email  string `json:"email,omitempty"`
 	Exists bool   `json:"exists"`
+}
+
+type tryConnectResponse struct {
+	Email  string `json:"email,omitempty"`
+	Exists bool   `json:"exists"`
+	Token  string `json:"token,omitempty"`
+}
+
+type connectFromTokenRequest struct {
+	Email string `json:"email,omitempty"`
+	Token string `json:"token,omitempty"`
+}
+
+type connectFromTokenResponse struct {
+	Email       string `json:"email,omitempty"`
+	IsAuthValid bool   `json:"isAuthValid"`
+}
+
+type exceptionMiddleware struct {
+	Message string `json:"message,omitempty"`
 }
 
 type notificationRequest struct {
@@ -38,7 +63,7 @@ type notificationData struct {
 	Body  string `json:"body,omitempty"`
 }
 
-type authResponse struct {
+type authAnswerRequest struct {
 	Client      string `json:"client,omitempty"`
 	IsAuthValid bool   `json:"isAuthValid"`
 }
@@ -85,11 +110,13 @@ func main() {
 	go manager.Start()
 
 	r := mux.NewRouter()
-	r.HandleFunc("/connect/{email}", connect)
+	r.HandleFunc("/connect/{email}", validateMiddleware(connect))
 	r.HandleFunc("/userExists/{email}", checkUser)
+	r.HandleFunc("/tryConnect/{email}", tryConnect)
+	r.HandleFunc("/connectFromToken", connectFromToken).Methods("POST")
 	r.HandleFunc("/authAnswer", authAnswer).Methods("POST")
 	r.HandleFunc("/register", register).Methods("POST")
-	http.ListenAndServe(":"+PORT, r)
+	log.Fatal(http.ListenAndServeTLS(":"+PORT, "localhost.pem", "localhost-key.pem", r))
 }
 
 func checkUser(w http.ResponseWriter, r *http.Request) {
@@ -97,22 +124,57 @@ func checkUser(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
 	exists, err := userExists(params["email"])
 	if err != nil {
+		w.WriteHeader(400)
 		log.Println(err.Error())
 		return
 	}
 	res := userExistsRequest{Email: params["email"], Exists: exists}
 	json, err := json.Marshal(res)
 	if err != nil {
+		w.WriteHeader(500)
 		log.Println(err.Error())
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "%s", string(json))
+	return
+}
+
+func tryConnect(w http.ResponseWriter, r *http.Request) {
+
+	params := mux.Vars(r)
+	exists, err := userExists(params["email"])
+	if err != nil {
+		w.WriteHeader(400)
+		log.Println(err.Error())
+		return
+	}
+	token := ""
+	if exists != false {
+		token, err = jwt.CreateToken(params["email"], time.Duration(5))
+		if err != nil {
+			w.WriteHeader(500)
+			log.Println(err.Error())
+			return
+		}
+	}
+	res := tryConnectResponse{Email: params["email"], Exists: exists, Token: token}
+	json, err := json.Marshal(res)
+	if err != nil {
+		w.WriteHeader(500)
+		log.Println(err.Error())
+		return
+	}
+	w.Header().Add("content-type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "%s", string(json))
 	return
 }
 
 func userExists(email string) (bool, error) {
 
-	request := fmt.Sprintf("http://%s:%s/user/email/%s", dbServiceName, dbServicePort, email)
+	request := fmt.Sprintf("https://%s:%s/user/email/%s", dbServiceName, dbServicePort, email)
 	response, err := http.Get(request)
 	if err != nil {
 		log.Println(err)
@@ -141,7 +203,7 @@ func userExists(email string) (bool, error) {
 
 func connect(w http.ResponseWriter, r *http.Request) {
 
-	params := mux.Vars(r)
+	email := context.Get(r, "decoded")
 
 	//DO NOT DO THAT IN PRODUCTION
 	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
@@ -151,16 +213,15 @@ func connect(w http.ResponseWriter, r *http.Request) {
 		log.Println(err.Error())
 		return
 	}
-	c := socket.NewChannel(conn, params["email"])
+	c := socket.NewChannel(conn, email.(string))
 	manager.Register <- c
 	go manager.Receive(c)
 	go manager.Send(c)
 	return
 }
 
-func authAnswer(w http.ResponseWriter, r *http.Request) {
-
-	var authResponse authResponse
+func connectFromToken(w http.ResponseWriter, r *http.Request) {
+	var connectFromTokenRequest connectFromTokenRequest
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(500)
@@ -168,29 +229,73 @@ func authAnswer(w http.ResponseWriter, r *http.Request) {
 		log.Println(err.Error())
 		return
 	}
-	err = json.Unmarshal(body, &authResponse)
+	err = json.Unmarshal(body, &connectFromTokenRequest)
 	if err != nil {
 		w.WriteHeader(400)
 		fmt.Fprintf(w, "error when unmarshalling json\n")
 		log.Println(err.Error())
 		return
 	}
-	fmt.Printf("%s %t\n", authResponse.Client, authResponse.IsAuthValid)
-	if channel, ok := manager.Channels[authResponse.Client]; ok {
-		channel.Data <- socket.Packet{IsAuthValid: authResponse.IsAuthValid}
+	_, err = jwt.ValidateToken(connectFromTokenRequest.Token, connectFromTokenRequest.Email)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "invalid token\n")
+		log.Println(err.Error())
+		return
+	}
+	res := connectFromTokenResponse{Email: connectFromTokenRequest.Email, IsAuthValid: true}
+	json, err := json.Marshal(&res)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "internal marshalling error")
+		log.Println(err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "%s", json)
+	return
+}
+
+func authAnswer(w http.ResponseWriter, r *http.Request) {
+
+	var authAnswer authAnswerRequest
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "error when receiving stuff\n")
+		log.Println(err.Error())
+		return
+	}
+	err = json.Unmarshal(body, &authAnswer)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "error when unmarshalling json\n")
+		log.Println(err.Error())
+		return
+	}
+	expirationLimit := time.Duration(131400)
+	token, err := jwt.CreateToken(authAnswer.Client, expirationLimit)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "error when creating token\n")
+		log.Println(err.Error())
+	}
+	if channel, ok := manager.Channels[authAnswer.Client]; ok {
+		channel.Data <- socket.Packet{IsAuthValid: authAnswer.IsAuthValid, Token: token}
 	}
 	return
 }
 
 func sendNotification(token string) {
-	request := "https://fcm.googleapis.com/fcm/send"
+
 	data := notificationRequest{Data: notificationData{Title: "FunConnect", Body: "Connect to your app"}, To: token}
 	body, err := json.Marshal(data)
 	if err != nil {
 		log.Println(err.Error())
 		return
 	}
-	req, err := http.NewRequest("POST", request, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", firebaseService, bytes.NewReader(body))
 	if err != nil {
 		log.Println(err.Error())
 		return
@@ -212,6 +317,7 @@ func sendNotification(token string) {
 }
 
 func register(w http.ResponseWriter, r *http.Request) {
+
 	var userRequest userRegistrationRequest
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -227,6 +333,18 @@ func register(w http.ResponseWriter, r *http.Request) {
 		log.Println(err.Error())
 		return
 	}
+	exists, err := userExists(userRequest.Email)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "internal error")
+		log.Println(err.Error())
+		return
+	}
+	if exists != false {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "user already exists")
+		return
+	}
 	registration := registerUser(userRequest)
 	if registration != true {
 		w.WriteHeader(500)
@@ -239,14 +357,15 @@ func register(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "error during answer\n")
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	r.Header.Set("Content-Type", "application/json")
 	fmt.Fprintf(w, "%s", string(answer))
 	return
 }
 
 func registerUser(user userRegistrationRequest) bool {
-	request := fmt.Sprintf("http://%s:%s/user", dbServiceName, dbServicePort)
+
+	request := fmt.Sprintf("https://%s:%s/user", dbServiceName, dbServicePort)
 	body, err := json.Marshal(user)
 	if err != nil {
 		log.Println(err.Error())
@@ -269,4 +388,30 @@ func registerUser(user userRegistrationRequest) bool {
 		return false
 	}
 	return true
+}
+
+func validateMiddleware(next http.HandlerFunc) http.HandlerFunc {
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params := mux.Vars(r)
+		keys := r.URL.Query()
+		token := keys.Get("token")
+		if token != "" {
+			mail, err := jwt.ValidateToken(token, params["email"])
+			if err != nil {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(exceptionMiddleware{Message: err.Error()})
+				return
+			}
+			if mail != "" {
+				context.Set(r, "decoded", mail)
+				next(w, r)
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(exceptionMiddleware{Message: "Invalid authorization token"})
+				return
+			}
+		}
+	})
 }
