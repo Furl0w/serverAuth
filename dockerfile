@@ -1,7 +1,7 @@
 FROM golang:1.10-alpine as builder
 
 COPY app/ /go/src/serverAuth/app/
-COPY socket/ /go/src/serverAuth/socket/
+COPY tools /go/src/serverAuth/tools
 COPY Gopkg.lock /go/src/serverAuth
 COPY Gopkg.toml /go/src/serverAuth
 WORKDIR /go/src/serverAuth
