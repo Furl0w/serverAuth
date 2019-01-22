@@ -35,9 +35,8 @@ type userExistsRequest struct {
 }
 
 type tryConnectResponse struct {
-	Email  string `json:"email,omitempty"`
-	Exists bool   `json:"exists"`
-	Token  string `json:"token,omitempty"`
+	Email string `json:"email,omitempty"`
+	Token string `json:"token,omitempty"`
 }
 
 type connectFromTokenRequest struct {
@@ -159,15 +158,17 @@ func tryConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	sendNotification(phoneToken)
 	token := ""
-	if exists != false {
-		token, err = jwt.CreateToken(params["email"], time.Duration(5), []byte(jwtSecret))
-		if err != nil {
-			w.WriteHeader(500)
-			log.Println(err.Error())
-			return
-		}
+	if phoneToken == "" {
+		w.WriteHeader(400)
+		return
 	}
-	res := tryConnectResponse{Email: params["email"], Exists: exists, Token: token}
+	token, err = jwt.CreateToken(params["email"], time.Duration(5), []byte(jwtSecret))
+	if err != nil {
+		w.WriteHeader(500)
+		log.Println(err.Error())
+		return
+	}
+	res := tryConnectResponse{Email: params["email"], Token: token}
 	json, err := json.Marshal(res)
 	if err != nil {
 		w.WriteHeader(500)
