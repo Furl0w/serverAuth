@@ -26,6 +26,7 @@ const firebaseService = "https://fcm.googleapis.com/fcm/send"
 type user struct {
 	ID    string `json:"id,omitempty"`
 	Email string `json:"email,omitempty"`
+	Token string `json:"token,omitempty"`
 }
 
 type userExistsRequest struct {
@@ -116,12 +117,12 @@ func main() {
 	go manager.Start()
 
 	r := mux.NewRouter()
-	r.HandleFunc("/connect/{email}", validateMiddleware(connect))
-	r.HandleFunc("/userExists/{email}", checkUser)
-	r.HandleFunc("/tryConnect/{email}", tryConnect)
-	r.HandleFunc("/connectFromToken", connectFromToken).Methods("POST")
+	r.HandleFunc("/auth/connect/{email}", validateMiddleware(connect))
+	r.HandleFunc("/auth/userExists/{email}", checkUser)
+	r.HandleFunc("/auth/tryConnect/{email}", tryConnect)
+	r.HandleFunc("/auth/register", register).Methods("POST")
+	r.HandleFunc("/auth/connectFromToken", connectFromToken).Methods("POST")
 	r.HandleFunc("/authAnswer", authAnswer).Methods("POST")
-	r.HandleFunc("/register", register).Methods("POST")
 	log.Fatal(http.ListenAndServe(":"+PORT, r))
 }
 
@@ -150,12 +151,13 @@ func checkUser(w http.ResponseWriter, r *http.Request) {
 func tryConnect(w http.ResponseWriter, r *http.Request) {
 
 	params := mux.Vars(r)
-	exists, err := userExists(params["email"])
+	phoneToken, err := getTokenFromEmail(params["email"])
 	if err != nil {
 		w.WriteHeader(400)
 		log.Println(err.Error())
 		return
 	}
+	sendNotification(phoneToken)
 	token := ""
 	if exists != false {
 		token, err = jwt.CreateToken(params["email"], time.Duration(5), []byte(jwtSecret))
@@ -180,7 +182,7 @@ func tryConnect(w http.ResponseWriter, r *http.Request) {
 
 func userExists(email string) (bool, error) {
 
-	request := fmt.Sprintf("https://%s:%s/user/email/%s", dbServiceName, dbServicePort, email)
+	request := fmt.Sprintf("http://%s:%s/user/email/%s", dbServiceName, dbServicePort, email)
 	response, err := http.Get(request)
 	if err != nil {
 		log.Println(err)
@@ -205,6 +207,35 @@ func userExists(email string) (bool, error) {
 		return true, nil
 	}
 	return false, errors.New("Could not reach the service")
+}
+
+func getTokenFromEmail(email string) (string, error) {
+
+	request := fmt.Sprintf("http://%s:%s/user/email/%s", dbServiceName, dbServicePort, email)
+	response, err := http.Get(request)
+	if err != nil {
+		log.Println(err)
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == 200 {
+		var userRequest []user
+		body, err := ioutil.ReadAll(response.Body)
+		if err != nil {
+			log.Println(err.Error())
+			return "", err
+		}
+		err = json.Unmarshal(body, &userRequest)
+		if err != nil {
+			log.Println(err.Error())
+			return "", err
+		}
+		if len(userRequest) != 1 {
+			return "", nil
+		}
+		return userRequest[0].Token, nil
+	}
+	return "", errors.New("Could not reach the service")
 }
 
 func connect(w http.ResponseWriter, r *http.Request) {
@@ -307,11 +338,8 @@ func sendNotification(token string) {
 		return
 	}
 
-	//Secret key
-	key := ""
-
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("key=%s", key))
+	req.Header.Set("Authorization", fmt.Sprintf("key=%s", firebaseSecret))
 
 	client := http.Client{}
 	resp, err := client.Do(req)
@@ -371,7 +399,7 @@ func register(w http.ResponseWriter, r *http.Request) {
 
 func registerUser(user userRegistrationRequest) bool {
 
-	request := fmt.Sprintf("https://%s:%s/user", dbServiceName, dbServicePort)
+	request := fmt.Sprintf("http://%s:%s/user", dbServiceName, dbServicePort)
 	body, err := json.Marshal(user)
 	if err != nil {
 		log.Println(err.Error())
